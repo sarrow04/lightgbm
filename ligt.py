@@ -35,7 +35,7 @@ def generate_dummy_csv():
 st.title("LightGBM 手動チューニング予測アプリ")
 st.write("サイドバーの数値を調整して、LightGBMの挙動と精度をリアルタイムに確認できます。")
 
-# --- サイドバー：ダミーデータとパラメータ設定 ---
+# --- サイドバー ---
 st.sidebar.header("📥 テスト用データの取得")
 st.sidebar.download_button(
     label="ダミー売上データ(5000件)をダウンロード",
@@ -63,6 +63,10 @@ uploaded_file = st.file_uploader("学習用CSVデータをアップロードし�
 
 if uploaded_file is not None:
     df = pd.read_csv(uploaded_file)
+    
+    # プレビュー表示を復元
+    st.write("データプレビュー:")
+    st.dataframe(df.head())
     
     target_col = st.selectbox("予測したいターゲット変数を選択してください", df.columns)
 
@@ -103,7 +107,7 @@ if uploaded_file is not None:
                 num_boost_round=1000
             )
 
-            # --- モデルとデータの状態を保存 ---
+            # --- モデルと評価用データを保存 ---
             st.session_state['trained_model'] = model
             st.session_state['feature_names'] = X.columns
             st.session_state['X_ref'] = X.copy()
@@ -117,11 +121,25 @@ if uploaded_file is not None:
         X_test = st.session_state['X_test']
         y_test = st.session_state['y_test']
 
+        # 予測と各指標の計算
         preds = model.predict(X_test)
         rmse = np.sqrt(mean_squared_error(y_test, preds))
+        mae = mean_absolute_error(y_test, preds)
         r2 = r2_score(y_test, preds)
         
-        st.success(f"学習完了！ (RMSE: {rmse:.2f} / R2: {r2:.4f})")
+        preds_clip = np.clip(preds, 0, None)
+        y_test_clip = np.clip(y_test, 0, None)
+        rmsle = np.sqrt(mean_squared_error(np.log1p(y_test_clip), np.log1p(preds_clip)))
+        
+        st.success("学習完了！")
+
+        # 大きな指標ダッシュボードを復元
+        st.subheader("モデルの予測精度")
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("RMSLE", f"{rmsle:.4f}")
+        col2.metric("RMSE", f"{rmse:.4f}")
+        col3.metric("MAE", f"{mae:.4f}")
+        col4.metric("R2 Score", f"{r2:.4f}")
 
         # --- 新規データの予測シミュレーター ---
         st.markdown("---")
@@ -132,7 +150,6 @@ if uploaded_file is not None:
             input_dict = {}
             X_ref = st.session_state['X_ref']
             
-            # 特徴量ごとに自動で入力フォームを作成
             for col in st.session_state['feature_names']:
                 if X_ref[col].dtype.name == 'category':
                     options = X_ref[col].cat.categories.tolist()
@@ -142,15 +159,11 @@ if uploaded_file is not None:
                     input_dict[col] = st.number_input(f"{col} (数値)", value=default_val)
                     
             if st.form_submit_button("この条件で予測する"):
-                # 入力された値から1行のデータフレームを作成
                 input_df = pd.DataFrame([input_dict])
-                
-                # カテゴリ型を復元（LightGBMのエラー回避）
                 for col in st.session_state['feature_names']:
                     if X_ref[col].dtype.name == 'category':
                         input_df[col] = input_df[col].astype('category')
                 
-                # 予測の実行
                 pred_val = model.predict(input_df)[0]
                 st.info(f"**算出された予測値:** {pred_val:,.2f}")
 
