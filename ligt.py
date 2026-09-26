@@ -7,7 +7,6 @@ import numpy as np
 import shap
 import matplotlib.pyplot as plt
 
-# --- ダミーデータ生成機能（キャッシュして高速化） ---
 @st.cache_data
 def generate_dummy_csv():
     np.random.seed(42)
@@ -42,8 +41,7 @@ st.sidebar.download_button(
     label="ダミー売上データ(5000件)をダウンロード",
     data=generate_dummy_csv(),
     file_name='dummy_sales_data.csv',
-    mime='text/csv',
-    help="このCSVをダウンロードして、右側のアップロード画面に入れてください。"
+    mime='text/csv'
 )
 
 st.sidebar.markdown("---")
@@ -57,7 +55,7 @@ p_feature_frac = st.sidebar.slider("feature_fraction (特徴量割合)", min_val
 
 max_leaves_limit = (2 ** p_max_depth) - 1
 if p_num_leaves > max_leaves_limit:
-    st.sidebar.warning(f"⚠️ max_depth={p_max_depth} の理論限界に合わせて、num_leavesを {max_leaves_limit} に自動補正します。")
+    st.sidebar.warning(f"⚠️ max_depth={p_max_depth} の限界に合わせて num_leaves を {max_leaves_limit} に補正しました。")
     p_num_leaves = max_leaves_limit
 
 # 1. CSVのアップロード
@@ -65,9 +63,7 @@ uploaded_file = st.file_uploader("学習用CSVデータをアップロードし�
 
 if uploaded_file is not None:
     df = pd.read_csv(uploaded_file)
-    st.write("データプレビュー:", df.head())
     
-    # 2. 目的変数の選択
     target_col = st.selectbox("予測したいターゲット変数を選択してください", df.columns)
 
     if st.button("設定したパラメータで学習を実行"):
@@ -94,55 +90,80 @@ if uploaded_file is not None:
             train_data = lgb.Dataset(X_train, label=y_train)
             valid_data = lgb.Dataset(X_test, label=y_test, reference=train_data)
             
-            # 学習過程を記録するための空辞書を用意
             evals_result = {}
-            
             model = lgb.train(
                 params,
                 train_data,
-                # 訓練データと検証データの両方を渡すことで、両方の誤差推移を取得
                 valid_sets=[train_data, valid_data],
                 valid_names=['Train', 'Validation'],
                 callbacks=[
                     lgb.early_stopping(stopping_rounds=20, verbose=False),
-                    lgb.record_evaluation(evals_result) # ここで辞書に学習過程を記録
+                    lgb.record_evaluation(evals_result)
                 ],
                 num_boost_round=1000
             )
 
-            # --- 予測と精度の計算 ---
-            preds = model.predict(X_test)
-            rmse = np.sqrt(mean_squared_error(y_test, preds))
-            mae = mean_absolute_error(y_test, preds)
-            r2 = r2_score(y_test, preds)
-            
-            preds_clip = np.clip(preds, 0, None)
-            y_test_clip = np.clip(y_test, 0, None)
-            rmsle = np.sqrt(mean_squared_error(np.log1p(y_test_clip), np.log1p(preds_clip)))
-            
-            st.success(f"学習完了！ (ストップしたラウンド: {model.best_iteration})")
-            
-            # --- 精度の表示 ---
-            st.subheader("モデルの予測精度")
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("RMSLE", f"{rmsle:.4f}")
-            col2.metric("RMSE", f"{rmse:.4f}")
-            col3.metric("MAE", f"{mae:.4f}")
-            col4.metric("R2 Score", f"{r2:.4f}")
+            # --- モデルとデータの状態を保存 ---
+            st.session_state['trained_model'] = model
+            st.session_state['feature_names'] = X.columns
+            st.session_state['X_ref'] = X.copy()
+            st.session_state['evals_result'] = evals_result
+            st.session_state['X_test'] = X_test
+            st.session_state['y_test'] = y_test
 
-            # --- 学習曲線の表示 ---
-            st.subheader("学習曲線 (RMSEの推移)")
-            # 記録した辞書からTrainとValidationのRMSEリストを取り出してデータフレーム化
-            learning_curve_df = pd.DataFrame({
-                'Train RMSE': evals_result['Train']['rmse'],
-                'Validation RMSE': evals_result['Validation']['rmse']
-            })
-            st.line_chart(learning_curve_df)
+    # === 学習済みモデルが存在する場合の表示 ===
+    if 'trained_model' in st.session_state:
+        model = st.session_state['trained_model']
+        X_test = st.session_state['X_test']
+        y_test = st.session_state['y_test']
 
-            # --- SHAP値の計算と可視化 ---
-            st.subheader("SHAP値による特徴量の解釈")
-            explainer = shap.TreeExplainer(model)
-            shap_values = explainer.shap_values(X_test)
-            fig, ax = plt.subplots(figsize=(10, 6))
-            shap.summary_plot(shap_values, X_test, show=False)
-            st.pyplot(fig)
+        preds = model.predict(X_test)
+        rmse = np.sqrt(mean_squared_error(y_test, preds))
+        r2 = r2_score(y_test, preds)
+        
+        st.success(f"学習完了！ (RMSE: {rmse:.2f} / R2: {r2:.4f})")
+
+        # --- 新規データの予測シミュレーター ---
+        st.markdown("---")
+        st.subheader("🔮 予測シミュレーター")
+        st.write("数値を自由に変更して、予測結果がどう変わるか試せます。")
+        
+        with st.form("simulation_form"):
+            input_dict = {}
+            X_ref = st.session_state['X_ref']
+            
+            # 特徴量ごとに自動で入力フォームを作成
+            for col in st.session_state['feature_names']:
+                if X_ref[col].dtype.name == 'category':
+                    options = X_ref[col].cat.categories.tolist()
+                    input_dict[col] = st.selectbox(f"{col} (カテゴリ)", options)
+                else:
+                    default_val = float(X_ref[col].median())
+                    input_dict[col] = st.number_input(f"{col} (数値)", value=default_val)
+                    
+            if st.form_submit_button("この条件で予測する"):
+                # 入力された値から1行のデータフレームを作成
+                input_df = pd.DataFrame([input_dict])
+                
+                # カテゴリ型を復元（LightGBMのエラー回避）
+                for col in st.session_state['feature_names']:
+                    if X_ref[col].dtype.name == 'category':
+                        input_df[col] = input_df[col].astype('category')
+                
+                # 予測の実行
+                pred_val = model.predict(input_df)[0]
+                st.info(f"**算出された予測値:** {pred_val:,.2f}")
+
+        # --- 学習曲線の表示 ---
+        st.markdown("---")
+        st.subheader("学習曲線")
+        evals = st.session_state['evals_result']
+        st.line_chart(pd.DataFrame({'Train': evals['Train']['rmse'], 'Validation': evals['Validation']['rmse']}))
+
+        # --- SHAP値の計算と可視化 ---
+        st.subheader("特徴量の重要度 (SHAP)")
+        explainer = shap.TreeExplainer(model)
+        shap_values = explainer.shap_values(X_test)
+        fig, ax = plt.subplots(figsize=(10, 6))
+        shap.summary_plot(shap_values, X_test, show=False)
+        st.pyplot(fig)
