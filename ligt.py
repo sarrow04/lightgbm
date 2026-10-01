@@ -29,18 +29,26 @@ if uploaded_file is not None:
         target_col = st.sidebar.selectbox("ターゲット変数", df.columns)
         task_type = st.sidebar.radio("タスクの種類", ["回帰 (売上予測など)", "二値分類", "多クラス分類"])
         
+        # 【追加】逆対数変換のオプション
+        apply_expm1 = False
+        if "回帰" in task_type:
+            apply_expm1 = st.sidebar.checkbox(
+                "予測結果を逆対数変換 (expm1) して元のスケールに戻す", 
+                value=False, 
+                help="事前にターゲット変数を対数変換(log1p)している場合、チェックを入れるとグラフやダウンロードデータを元の売上個数などに戻して出力します。"
+            )
+
         features = [c for c in df.columns if c != target_col]
         X = df[features]
         y = df[target_col]
         
-        # 【追加】日付（DateTime）型の列を自動的に除外する処理
-        # LightGBMは日付型を直接計算できないため、エラーを回避します。
+        # 日付（DateTime）型の列を自動的に除外する処理
         datetime_cols = X.select_dtypes(include=['datetime', 'datetimetz', 'datetime64']).columns
         if len(datetime_cols) > 0:
             st.warning(f"⚠️ 日付型の列 ({', '.join(datetime_cols)}) が検出されました。LightGBMは日付を直接扱えないため、自動的に特徴量から除外しました。")
             X = X.drop(columns=datetime_cols)
         
-        # カテゴリ変数の簡易エンコーディング（Pandasの警告対策で 'str' を追加）
+        # カテゴリ変数の簡易エンコーディング
         for col in X.select_dtypes(include=['object', 'category', 'str']).columns:
             X[col] = X[col].astype('category')
             
@@ -98,8 +106,15 @@ if uploaded_file is not None:
             # テストデータに対する予測の実行
             y_pred_prob = model.predict(X_test)
             
+            # 評価用の変数を用意
+            y_test_eval = y_test.copy()
+            
             if "回帰" in task_type:
                 y_pred = y_pred_prob
+                # 【追加】チェックが入っている場合、予測値と正解データを元のスケールに戻す
+                if apply_expm1:
+                    y_pred = np.expm1(y_pred)
+                    y_test_eval = np.expm1(y_test_eval)
             elif task_type == "二値分類":
                 y_pred = (y_pred_prob > 0.5).astype(int)
             else: # 多クラス分類
@@ -112,12 +127,13 @@ if uploaded_file is not None:
                 if "回帰" in task_type:
                     col1, col2, col3, col4 = st.columns(4)
                     
-                    rmse = np.sqrt(mean_squared_error(y_test, y_pred))
-                    mae = mean_absolute_error(y_test, y_pred)
-                    r2 = r2_score(y_test, y_pred)
+                    # 評価は y_test_eval (必要に応じて元に戻されたデータ) で行う
+                    rmse = np.sqrt(mean_squared_error(y_test_eval, y_pred))
+                    mae = mean_absolute_error(y_test_eval, y_pred)
+                    r2 = r2_score(y_test_eval, y_pred)
                     
-                    # RMSLEの計算 (売上がマイナスになるのを防ぐため0にクリップして計算)
-                    y_test_safe = np.clip(y_test, 0, None)
+                    # RMSLEの計算
+                    y_test_safe = np.clip(y_test_eval, 0, None)
                     y_pred_safe = np.clip(y_pred, 0, None)
                     rmsle = np.sqrt(mean_squared_error(np.log1p(y_test_safe), np.log1p(y_pred_safe)))
                     
@@ -143,9 +159,9 @@ if uploaded_file is not None:
                     
                     st.subheader("実測値 vs 予測値")
                     fig_pred, ax_pred = plt.subplots(figsize=(8, 6))
-                    ax_pred.scatter(y_test, y_pred, alpha=0.5)
-                    min_val = min(y_test.min(), y_pred.min())
-                    max_val = max(y_test.max(), y_pred.max())
+                    ax_pred.scatter(y_test_eval, y_pred, alpha=0.5)
+                    min_val = min(y_test_eval.min(), y_pred.min())
+                    max_val = max(y_test_eval.max(), y_pred.max())
                     ax_pred.plot([min_val, max_val], [min_val, max_val], 'r--', lw=2)
                     ax_pred.set_xlabel("True Values")
                     ax_pred.set_ylabel("Predictions")
@@ -156,10 +172,10 @@ if uploaded_file is not None:
                     col1, col2, col3, col4 = st.columns(4)
                     avg_method = 'binary' if task_type == "二値分類" else 'macro'
                     
-                    acc = accuracy_score(y_test, y_pred)
-                    prec = precision_score(y_test, y_pred, average=avg_method, zero_division=0)
-                    rec = recall_score(y_test, y_pred, average=avg_method, zero_division=0)
-                    f1 = f1_score(y_test, y_pred, average=avg_method, zero_division=0)
+                    acc = accuracy_score(y_test_eval, y_pred)
+                    prec = precision_score(y_test_eval, y_pred, average=avg_method, zero_division=0)
+                    rec = recall_score(y_test_eval, y_pred, average=avg_method, zero_division=0)
+                    f1 = f1_score(y_test_eval, y_pred, average=avg_method, zero_division=0)
                     
                     col1.metric("Accuracy", f"{acc:.4f}")
                     col2.metric("Precision", f"{prec:.4f}")
@@ -175,7 +191,7 @@ if uploaded_file is not None:
                         """)
                     
                     st.subheader("混同行列 (Confusion Matrix)")
-                    cm = confusion_matrix(y_test, y_pred)
+                    cm = confusion_matrix(y_test_eval, y_pred)
                     fig_cm, ax_cm = plt.subplots(figsize=(8, 6))
                     sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=ax_cm)
                     ax_cm.set_xlabel('Predicted Label')
@@ -227,8 +243,10 @@ if uploaded_file is not None:
                 st.subheader("テストデータの予測結果")
                 
                 result_df = X_test.copy()
-                result_df['True_Label'] = y_test
+                # 出力用データも元に戻されたスケールを反映
+                result_df['True_Label'] = y_test_eval 
                 result_df['Prediction'] = y_pred
+                
                 if "回帰" not in task_type:
                      if task_type == "二値分類":
                          result_df['Prediction_Prob'] = y_pred_prob
