@@ -33,6 +33,13 @@ if uploaded_file is not None:
         X = df[features]
         y = df[target_col]
         
+        # 【追加】日付（DateTime）型の列を自動的に除外する処理
+        # LightGBMは日付型を直接計算できないため、エラーを回避します。
+        datetime_cols = X.select_dtypes(include=['datetime', 'datetimetz', 'datetime64']).columns
+        if len(datetime_cols) > 0:
+            st.warning(f"⚠️ 日付型の列 ({', '.join(datetime_cols)}) が検出されました。LightGBMは日付を直接扱えないため、自動的に特徴量から除外しました。")
+            X = X.drop(columns=datetime_cols)
+        
         # カテゴリ変数の簡易エンコーディング（Pandasの警告対策で 'str' を追加）
         for col in X.select_dtypes(include=['object', 'category', 'str']).columns:
             X[col] = X[col].astype('category')
@@ -140,7 +147,6 @@ if uploaded_file is not None:
                     min_val = min(y_test.min(), y_pred.min())
                     max_val = max(y_test.max(), y_pred.max())
                     ax_pred.plot([min_val, max_val], [min_val, max_val], 'r--', lw=2)
-                    # 文字化け対策のため、日本語を削除して英語のみに修正
                     ax_pred.set_xlabel("True Values")
                     ax_pred.set_ylabel("Predictions")
                     ax_pred.set_title("True vs Predicted Values")
