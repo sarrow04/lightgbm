@@ -1,182 +1,120 @@
 import streamlit as st
 import pandas as pd
 import lightgbm as lgb
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-import numpy as np
-import shap
 import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+import numpy as np
 
-@st.cache_data
-def generate_dummy_csv():
-    np.random.seed(42)
-    n_rows = 5000
-    age = np.random.randint(20, 70, n_rows)
-    income = np.random.normal(500, 150, n_rows)
-    store_area = np.random.normal(120, 30, n_rows)
-    distance_to_station = np.random.uniform(0.1, 5.0, n_rows)
-    category = np.random.choice(['Electronics', 'Clothing', 'Food', 'Home'], n_rows)
-    weather = np.random.choice(['Sunny', 'Cloudy', 'Rainy'], n_rows)
+st.set_page_config(page_title="LightGBM Parquet App", layout="wide")
+st.title("LightGBM モデル学習 & 診断アプリ")
 
-    df = pd.DataFrame({
-        'Age': age, 'Income': income, 'Store_Area': store_area,
-        'Distance_to_Station': distance_to_station, 'Category': category, 'Weather': weather
-    })
-
-    base_sales = 1000
-    sales = base_sales + (df['Income'] * 2.0) - (df['Distance_to_Station'] * 100)
-    category_multiplier = {'Electronics': 1.8, 'Clothing': 1.2, 'Food': 0.7, 'Home': 1.0}
-    sales *= df['Category'].map(category_multiplier)
-    noise = np.random.normal(0, 300, n_rows)
-    df['Sales'] = np.clip(sales + noise, 100, None)
-    
-    return df.to_csv(index=False).encode('utf-8')
-
-st.title("LightGBM 手動チューニング予測アプリ")
-st.write("サイドバーの数値を調整して、LightGBMの挙動と精度をリアルタイムに確認できます。")
-
-# --- サイドバー ---
-st.sidebar.header("📥 テスト用データの取得")
-st.sidebar.download_button(
-    label="ダミー売上データ(5000件)をダウンロード",
-    data=generate_dummy_csv(),
-    file_name='dummy_sales_data.csv',
-    mime='text/csv'
-)
-
-st.sidebar.markdown("---")
-st.sidebar.header("🔧 パラメータ手動調整")
-
-p_max_depth = st.sidebar.slider("max_depth (木の深さ)", min_value=1, max_value=15, value=5)
-p_num_leaves = st.sidebar.slider("num_leaves (葉の最大数)", min_value=2, max_value=128, value=31)
-p_min_data = st.sidebar.slider("min_data_in_leaf (最小データ数)", min_value=1, max_value=100, value=20)
-p_lr = st.sidebar.number_input("learning_rate (学習率)", min_value=0.001, max_value=0.5, value=0.05, step=0.01)
-p_feature_frac = st.sidebar.slider("feature_fraction (特徴量割合)", min_value=0.4, max_value=1.0, value=0.8, step=0.1)
-
-max_leaves_limit = (2 ** p_max_depth) - 1
-if p_num_leaves > max_leaves_limit:
-    st.sidebar.warning(f"⚠️ max_depth={p_max_depth} の限界に合わせて num_leaves を {max_leaves_limit} に補正しました。")
-    p_num_leaves = max_leaves_limit
-
-# 1. CSVのアップロード
-uploaded_file = st.file_uploader("学習用CSVデータをアップロードしてください", type="csv")
+# 1. データ読み込み
+st.sidebar.header("1. データの読み込み")
+uploaded_file = st.sidebar.file_uploader("Parquetファイルをアップロード", type=["parquet"])
 
 if uploaded_file is not None:
-    df = pd.read_csv(uploaded_file)
+    # Parquetの読み込み
+    df = pd.read_parquet(uploaded_file)
+    st.subheader("データプレビュー")
+    st.dataframe(df.head(10))
     
-    # プレビュー表示を復元
-    st.write("データプレビュー:")
-    st.dataframe(df.head())
+    # 2. 設定
+    st.sidebar.header("2. タスクと特徴量の設定")
+    target_col = st.sidebar.selectbox("ターゲット変数", df.columns)
+    task_type = st.sidebar.radio("タスクの種類", ["回帰", "二値分類", "多クラス分類"])
     
-    target_col = st.selectbox("予測したいターゲット変数を選択してください", df.columns)
+    features = [c for c in df.columns if c != target_col]
+    X = df[features]
+    y = df[target_col]
+    
+    # カテゴリ変数の簡易エンコーディング
+    for col in X.select_dtypes(include=['object', 'category']).columns:
+        X[col] = X[col].astype('category')
+        
+    # データ分割
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    
+    # 3. ハイパーパラメータ調整
+    st.sidebar.header("3. ハイパーパラメータ")
+    learning_rate = st.sidebar.slider("learning_rate", 0.001, 0.3, 0.05, 0.005)
+    num_leaves = st.sidebar.slider("num_leaves", 7, 127, 31, 2)
+    max_depth = st.sidebar.slider("max_depth", -1, 20, -1, 1)
+    n_estimators = st.sidebar.slider("n_estimators (学習回数)", 10, 1000, 100, 10)
+    
+    if st.button("モデルを学習する"):
+        # LightGBM用のパラメータ設定
+        params = {
+            'learning_rate': learning_rate,
+            'num_leaves': num_leaves,
+            'max_depth': max_depth,
+            'verbose': -1
+        }
+        
+        if task_type == "回帰":
+            params['objective'] = 'regression'
+            params['metric'] = 'rmse'
+        elif task_type == "二値分類":
+            params['objective'] = 'binary'
+            params['metric'] = 'binary_logloss'
+        else:
+            params['objective'] = 'multiclass'
+            params['num_class'] = len(y.unique())
+            params['metric'] = 'multi_logloss'
 
-    if st.button("設定したパラメータで学習を実行"):
-        with st.spinner('学習を実行中です...'):
-            X = df.drop(columns=[target_col])
-            for col in X.select_dtypes(include=['object']).columns:
-                X[col] = X[col].astype('category')
-            y = df[target_col]
-
-            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-
-            params = {
-                'objective': 'regression',
-                'metric': 'rmse',
-                'boosting_type': 'gbdt',
-                'seed': 42,
-                'max_depth': p_max_depth,
-                'num_leaves': p_num_leaves,
-                'min_data_in_leaf': p_min_data,
-                'learning_rate': p_lr,
-                'feature_fraction': p_feature_frac
-            }
-
-            train_data = lgb.Dataset(X_train, label=y_train)
-            valid_data = lgb.Dataset(X_test, label=y_test, reference=train_data)
-            
-            evals_result = {}
+        lgb_train = lgb.Dataset(X_train, y_train)
+        lgb_eval = lgb.Dataset(X_test, y_test, reference=lgb_train)
+        
+        evals_result = {}
+        
+        with st.spinner("学習中..."):
             model = lgb.train(
                 params,
-                train_data,
-                valid_sets=[train_data, valid_data],
-                valid_names=['Train', 'Validation'],
-                callbacks=[
-                    lgb.early_stopping(stopping_rounds=20, verbose=False),
-                    lgb.record_evaluation(evals_result)
-                ],
-                num_boost_round=1000
+                lgb_train,
+                num_boost_round=n_estimators,
+                valid_sets=[lgb_train, lgb_eval],
+                valid_names=['train', 'valid'],
+                callbacks=[lgb.record_evaluation(evals_result)]
             )
-
-            # --- モデルと評価用データを保存 ---
-            st.session_state['trained_model'] = model
-            st.session_state['feature_names'] = X.columns
-            st.session_state['X_ref'] = X.copy()
-            st.session_state['evals_result'] = evals_result
-            st.session_state['X_test'] = X_test
-            st.session_state['y_test'] = y_test
-
-    # === 学習済みモデルが存在する場合の表示 ===
-    if 'trained_model' in st.session_state:
-        model = st.session_state['trained_model']
-        X_test = st.session_state['X_test']
-        y_test = st.session_state['y_test']
-
-        # 予測と各指標の計算
-        preds = model.predict(X_test)
-        rmse = np.sqrt(mean_squared_error(y_test, preds))
-        mae = mean_absolute_error(y_test, preds)
-        r2 = r2_score(y_test, preds)
-        
-        preds_clip = np.clip(preds, 0, None)
-        y_test_clip = np.clip(y_test, 0, None)
-        rmsle = np.sqrt(mean_squared_error(np.log1p(y_test_clip), np.log1p(preds_clip)))
-        
-        st.success("学習完了！")
-
-        # 大きな指標ダッシュボードを復元
-        st.subheader("モデルの予測精度")
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("RMSLE", f"{rmsle:.4f}")
-        col2.metric("RMSE", f"{rmse:.4f}")
-        col3.metric("MAE", f"{mae:.4f}")
-        col4.metric("R2 Score", f"{r2:.4f}")
-
-        # --- 新規データの予測シミュレーター ---
-        st.markdown("---")
-        st.subheader("🔮 予測シミュレーター")
-        st.write("数値を自由に変更して、予測結果がどう変わるか試せます。")
-        
-        with st.form("simulation_form"):
-            input_dict = {}
-            X_ref = st.session_state['X_ref']
             
-            for col in st.session_state['feature_names']:
-                if X_ref[col].dtype.name == 'category':
-                    options = X_ref[col].cat.categories.tolist()
-                    input_dict[col] = st.selectbox(f"{col} (カテゴリ)", options)
-                else:
-                    default_val = float(X_ref[col].median())
-                    input_dict[col] = st.number_input(f"{col} (数値)", value=default_val)
-                    
-            if st.form_submit_button("この条件で予測する"):
-                input_df = pd.DataFrame([input_dict])
-                for col in st.session_state['feature_names']:
-                    if X_ref[col].dtype.name == 'category':
-                        input_df[col] = input_df[col].astype('category')
-                
-                pred_val = model.predict(input_df)[0]
-                st.info(f"**算出された予測値:** {pred_val:,.2f}")
-
-        # --- 学習曲線の表示 ---
-        st.markdown("---")
-        st.subheader("学習曲線")
-        evals = st.session_state['evals_result']
-        st.line_chart(pd.DataFrame({'Train': evals['Train']['rmse'], 'Validation': evals['Validation']['rmse']}))
-
-        # --- SHAP値の計算と可視化 ---
-        st.subheader("特徴量の重要度 (SHAP)")
-        explainer = shap.TreeExplainer(model)
-        shap_values = explainer.shap_values(X_test)
-        fig, ax = plt.subplots(figsize=(10, 6))
-        shap.summary_plot(shap_values, X_test, show=False)
+        st.success("学習が完了しました！")
+        
+        # 4. 学習曲線の描画
+        st.subheader("学習曲線 (Learning Curve)")
+        metric_name = params['metric']
+        train_loss = evals_result['train'][metric_name]
+        valid_loss = evals_result['valid'][metric_name]
+        
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.plot(train_loss, label='Train Loss')
+        ax.plot(valid_loss, label='Validation Loss')
+        ax.set_xlabel("Iterations")
+        ax.set_ylabel(metric_name)
+        ax.set_title(f"Learning Curve ({metric_name})")
+        ax.legend()
+        ax.grid(True, linestyle='--', alpha=0.7)
         st.pyplot(fig)
+        
+        # 5. 適正診断アドバイス
+        st.subheader("モデルの適正診断アドバイス")
+        
+        final_train_loss = train_loss[-1]
+        final_valid_loss = valid_loss[-1]
+        min_valid_loss = min(valid_loss)
+        
+        # 簡単なヒューリスティックによる診断
+        if final_valid_loss > final_train_loss * 1.5 and min_valid_loss < final_valid_loss:
+            st.error("⚠️ 過学習 (**Overfitting**) の可能性が高いです。")
+            st.write("Validationの誤差が途中で上昇に転じているか、Trainとの乖離が大きすぎます。")
+            st.markdown("- 「**learning_rate**」 を下げる\n- 「**num_leaves**」 や 「**max_depth**」 を小さくしてモデルをシンプルにする\n- **n_estimators** を Validation Loss が最小になった付近で止める (**Early Stopping** の目安)")
+            
+        elif final_train_loss > np.mean(train_loss[:int(n_estimators*0.1)]) * 0.9:
+            st.warning("⚠️ 未学習 (**Underfitting**) の可能性が高いです。")
+            st.write("Trainの誤差が十分に下がっていません。モデルがデータのパターンを学習できていない状態です。")
+            st.markdown("- 「**learning_rate**」 を少し上げる\n- 「**num_leaves**」 や 「**max_depth**」 を大きくして表現力を上げる\n- **n_estimators** の上限を増やす")
+            
+        else:
+            st.success("✅ 学習は概ね適正に進行しています。")
+            st.write("TrainとValidationの誤差がともに減少しており、極端な乖離も見られません。")
+            st.markdown("- さらに精度を上げる場合は、新しい特徴量の追加(**Feature Engineering**)などを検討してください。")
+else:
+    st.info("サイドバーからParquet形式のデータをアップロードしてください。")
