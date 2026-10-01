@@ -3,6 +3,7 @@ import pandas as pd
 import lightgbm as lgb
 import matplotlib.pyplot as plt
 import seaborn as sns
+import shap  # 【追加】SHAPライブラリ
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import (
     mean_squared_error, mean_absolute_error, r2_score,
@@ -29,7 +30,7 @@ if uploaded_file is not None:
         target_col = st.sidebar.selectbox("ターゲット変数", df.columns)
         task_type = st.sidebar.radio("タスクの種類", ["回帰 (売上予測など)", "二値分類", "多クラス分類"])
         
-        # 【追加】逆対数変換のオプション
+        # 逆対数変換のオプション
         apply_expm1 = False
         if "回帰" in task_type:
             apply_expm1 = st.sidebar.checkbox(
@@ -100,24 +101,22 @@ if uploaded_file is not None:
                 
             st.success("学習が完了しました！")
             
-            # タブで結果を分ける
-            tab1, tab2, tab3 = st.tabs(["評価指標と予測結果", "学習曲線と診断", "予測データのダウンロード"])
+            # 【変更】タブを4つに増やす
+            tab1, tab2, tab3, tab4 = st.tabs(["評価指標と予測結果", "学習曲線と診断", "予測データのDL", "SHAP値 (特徴量の解釈)"])
 
             # テストデータに対する予測の実行
             y_pred_prob = model.predict(X_test)
             
-            # 評価用の変数を用意
             y_test_eval = y_test.copy()
             
             if "回帰" in task_type:
                 y_pred = y_pred_prob
-                # 【追加】チェックが入っている場合、予測値と正解データを元のスケールに戻す
                 if apply_expm1:
                     y_pred = np.expm1(y_pred)
                     y_test_eval = np.expm1(y_test_eval)
             elif task_type == "二値分類":
                 y_pred = (y_pred_prob > 0.5).astype(int)
-            else: # 多クラス分類
+            else:
                 y_pred = np.argmax(y_pred_prob, axis=1)
 
             # --- Tab 1: 評価指標と予測結果 ---
@@ -127,34 +126,25 @@ if uploaded_file is not None:
                 if "回帰" in task_type:
                     col1, col2, col3, col4 = st.columns(4)
                     
-                    # 評価は y_test_eval (必要に応じて元に戻されたデータ) で行う
                     rmse = np.sqrt(mean_squared_error(y_test_eval, y_pred))
                     mae = mean_absolute_error(y_test_eval, y_pred)
                     r2 = r2_score(y_test_eval, y_pred)
                     
-                    # RMSLEの計算
                     y_test_safe = np.clip(y_test_eval, 0, None)
                     y_pred_safe = np.clip(y_pred, 0, None)
                     rmsle = np.sqrt(mean_squared_error(np.log1p(y_test_safe), np.log1p(y_pred_safe)))
                     
-                    # RMSLEを一番左に目立たせて配置
                     col1.metric("RMSLE (Kaggle指標)", f"{rmsle:.4f}")
                     col2.metric("RMSE", f"{rmse:.4f}")
                     col3.metric("MAE", f"{mae:.4f}")
                     col4.metric("R2 Score", f"{r2:.4f}")
                     
-                    # アプリ内での指標の見方解説
                     with st.expander("💡 指標（スコア）の見方・目安を開く"):
                         st.markdown("""
-                        - **RMSLE (Root Mean Squared Logarithmic Error)**:  
-                          **Kaggle「Store Sales」の公式指標です。** `0` に近いほど優秀です。  
-                          誤差の「絶対的な大きさ」ではなく「比率」を見ます。また、実際の売上より少なく予測（過小評価/品切れリスク）してしまった場合に、より重いペナルティを与える特徴があります。
-                        - **RMSE (二乗平均平方根誤差)**:  
-                          `0` に近いほど優秀です。売上個数など、元のデータと同じ単位でのズレの大きさを表します。大きく外した予測があると一気に数値が悪化します。
-                        - **MAE (平均絶対誤差)**:  
-                          `0` に近いほど優秀です。純粋な「ズレの平均値」なので、直感的に分かりやすい指標です。
-                        - **R2 Score (決定係数)**:  
-                          `1.0` に近いほど優秀です（最大1.0）。モデルがデータをどれくらい正確に説明できているかを表す割合です。0.5を下回ると精度が低く、0.7以上ならある程度良いモデルとされます。
+                        - **RMSLE**: Kaggle「Store Sales」公式指標。`0` に近いほど優秀。
+                        - **RMSE**: `0` に近いほど優秀。大きく外した予測があると悪化しやすい。
+                        - **MAE**: `0` に近いほど優秀。純粋なズレの平均値。
+                        - **R2 Score**: `1.0` に近いほど優秀。モデルの当てはまりの良さ。
                         """)
                     
                     st.subheader("実測値 vs 予測値")
@@ -182,14 +172,6 @@ if uploaded_file is not None:
                     col3.metric("Recall", f"{rec:.4f}")
                     col4.metric("F1 Score", f"{f1:.4f}")
                     
-                    with st.expander("💡 指標（スコア）の見方・目安を開く"):
-                        st.markdown("""
-                        - **Accuracy (正解率)**: 全データの中で、正しく予測できた割合です。`1.0` に近いほど優秀です。
-                        - **Precision (適合率)**: 「正」と予測した中で、本当に「正」だった割合。「誤報を減らしたい」時に重視します。
-                        - **Recall (再現率)**: 実際の「正」の中で、正しく予測できた割合。「見逃しを防ぎたい」時に重視します。
-                        - **F1 Score**: PrecisionとRecallのバランスを取った指標。どちらも高いモデルを作りたい時の総合評価に使います。
-                        """)
-                    
                     st.subheader("混同行列 (Confusion Matrix)")
                     cm = confusion_matrix(y_test_eval, y_pred)
                     fig_cm, ax_cm = plt.subplots(figsize=(8, 6))
@@ -215,38 +197,13 @@ if uploaded_file is not None:
                 ax_lc.legend()
                 ax_lc.grid(True, linestyle='--', alpha=0.7)
                 st.pyplot(fig_lc)
-                
-                # 適正診断アドバイス
-                st.subheader("モデルの適正診断アドバイス")
-                
-                final_train_loss = train_loss[-1]
-                final_valid_loss = valid_loss[-1]
-                min_valid_loss = min(valid_loss)
-                
-                if final_valid_loss > final_train_loss * 1.5 and min_valid_loss < final_valid_loss:
-                    st.error("⚠️ 過学習 (**Overfitting**) の可能性が高いです。")
-                    st.write("Validationの誤差が途中で上昇に転じているか、Trainとの乖離が大きすぎます。")
-                    st.markdown("- 「**learning_rate**」 を下げる\n- 「**num_leaves**」 や 「**max_depth**」 を小さくしてモデルをシンプルにする\n- **n_estimators** を Validation Loss が最小になった付近で止める (**Early Stopping** の目安)")
-                    
-                elif final_train_loss > np.mean(train_loss[:int(n_estimators*0.1)]) * 0.9:
-                    st.warning("⚠️ 未学習 (**Underfitting**) の可能性が高いです。")
-                    st.write("Trainの誤差が十分に下がっていません。モデルがデータのパターンを学習できていない状態です。")
-                    st.markdown("- 「**learning_rate**」 を少し上げる\n- 「**num_leaves**」 や 「**max_depth**」 を大きくして表現力を上げる\n- **n_estimators** の上限を増やす")
-                    
-                else:
-                    st.success("✅ 学習は概ね適正に進行しています。")
-                    st.write("TrainとValidationの誤差がともに減少しており、極端な乖離も見られません。")
-                    st.markdown("- さらに精度を上げる場合は、新しい特徴量の追加(**Feature Engineering**)などを検討してください。")
 
             # --- Tab 3: 予測データのダウンロード ---
             with tab3:
                 st.subheader("テストデータの予測結果")
-                
                 result_df = X_test.copy()
-                # 出力用データも元に戻されたスケールを反映
                 result_df['True_Label'] = y_test_eval 
                 result_df['Prediction'] = y_pred
-                
                 if "回帰" not in task_type:
                      if task_type == "二値分類":
                          result_df['Prediction_Prob'] = y_pred_prob
@@ -262,6 +219,38 @@ if uploaded_file is not None:
                     file_name='predictions.csv',
                     mime='text/csv',
                 )
+            
+            # --- Tab 4: SHAP値 (特徴量の解釈) ---
+            with tab4:
+                st.subheader("SHAP値による特徴量の重要度")
+                st.markdown("AIが予測を行う際に、**どのデータ（列）がどれくらい予測結果に影響を与えたか**を視覚的に示します。")
+                
+                with st.spinner("SHAP値を計算・描画中... (データが多いと少し時間がかかります)"):
+                    try:
+                        # SHAPの計算オブジェクトを作成
+                        explainer = shap.TreeExplainer(model)
+                        shap_values = explainer.shap_values(X_test)
+                        
+                        st.write("#### 📊 Summary Plot (サマリープロット)")
+                        st.markdown("""
+                        - **上にある特徴量ほど**、予測に対して重要な（影響力が大きい）ことを示します。
+                        - **点の色**：赤は「その値が高い」、青は「その値が低い」ことを意味します。
+                        - **横軸の位置**：中心(0)より右側（プラス方向）なら予測値を押し上げ、左側（マイナス方向）なら予測値を押し下げたことを意味します。
+                        """)
+                        
+                        plt.figure(figsize=(10, 6))
+                        # タスクによってshap_valuesの形が異なる（リストで返る場合がある）ための処理
+                        if isinstance(shap_values, list):
+                            # 二値分類の場合などはクラス1（正例）の方のSHAP値をプロット
+                            shap.summary_plot(shap_values[1] if len(shap_values) == 2 else shap_values, X_test, show=False)
+                        else:
+                            shap.summary_plot(shap_values, X_test, show=False)
+                        
+                        st.pyplot(plt.gcf())
+                        plt.clf() # 次の描画のためにリセット
+                        
+                    except Exception as e:
+                        st.error(f"SHAP値の計算中にエラーが発生しました。\n\n詳細: {e}")
 
     except Exception as e:
         st.error(f"ファイルの読み込みに失敗しました。Parquet形式のファイルか確認してください。\n\n詳細なエラー: {e}")
