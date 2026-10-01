@@ -1,8 +1,7 @@
 streamlit
 pandas
 lightgbm
+matplotlib
 scikit-learn
 numpy
-shap
-matplotlib
-optuna
+pyarrow
