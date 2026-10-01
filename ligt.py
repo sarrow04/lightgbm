@@ -33,8 +33,8 @@ if uploaded_file is not None:
         X = df[features]
         y = df[target_col]
         
-        # カテゴリ変数の簡易エンコーディング
-        for col in X.select_dtypes(include=['object', 'category']).columns:
+        # カテゴリ変数の簡易エンコーディング（Pandasの警告対策で 'str' を追加）
+        for col in X.select_dtypes(include=['object', 'category', 'str']).columns:
             X[col] = X[col].astype('category')
             
         # データ分割
@@ -140,8 +140,9 @@ if uploaded_file is not None:
                     min_val = min(y_test.min(), y_pred.min())
                     max_val = max(y_test.max(), y_pred.max())
                     ax_pred.plot([min_val, max_val], [min_val, max_val], 'r--', lw=2)
-                    ax_pred.set_xlabel("True Values (実際の売上等)")
-                    ax_pred.set_ylabel("Predictions (予測値)")
+                    # 文字化け対策のため、日本語を削除して英語のみに修正
+                    ax_pred.set_xlabel("True Values")
+                    ax_pred.set_ylabel("Predictions")
                     ax_pred.set_title("True vs Predicted Values")
                     st.pyplot(fig_pred)
 
