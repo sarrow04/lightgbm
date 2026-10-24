@@ -1,6 +1,6 @@
 import json
 
-# 1. これまでのコードをPythonの辞書（キーワード別）にまとめる
+# 1. 辞書データ（先ほどと同じもの）
 code_data = {
     "前処理・基礎": [
         {
@@ -81,97 +81,21 @@ plt.show()"""
     ]
 }
 
-# 2. HTMLのテンプレート（デザインとコピペ用のJavaScript）
-html_template = """
-<!DOCTYPE html>
-<html lang="ja">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>特徴量エンジニアリング 辞書アプリ</title>
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f4f7f6; color: #333; margin: 0; padding: 20px; }
-        .container { max-width: 900px; margin: 0 auto; }
-        h1 { text-align: center; color: #2c3e50; }
-        .category { background: #fff; margin-bottom: 20px; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        .category h2 { margin-top: 0; color: #34495e; border-bottom: 2px solid #3498db; padding-bottom: 5px; }
-        .snippet { margin-bottom: 20px; }
-        .snippet-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; }
-        .snippet-title { font-weight: bold; color: #e67e22; }
-        .copy-btn { background-color: #3498db; color: white; border: none; padding: 5px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; transition: background 0.3s; }
-        .copy-btn:hover { background-color: #2980b9; }
-        pre { background: #282c34; color: #abb2bf; padding: 15px; border-radius: 6px; overflow-x: auto; font-family: "Courier New", Courier, monospace; margin: 0; font-size: 14px; line-height: 1.4; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>🍱 お弁当需要予測 特徴量スニペット</h1>
-        <div id="content"></div>
-    </div>
+# 2. Markdown形式のテキストを生成
+md_content = "# 🍱 お弁当需要予測 特徴量スニペット集\n\n"
+md_content += "Kaggleや実務で使える特徴量エンジニアリングのPythonコード集です。\n\n"
 
-    <script>
-        // Pythonから埋め込まれたJSONデータを読み込む
-        const codeData = {json_data};
-        const contentDiv = document.getElementById('content');
+for category, snippets in code_data.items():
+    md_content += f"## {category}\n\n"
+    for snippet in snippets:
+        md_content += f"### {snippet['title']}\n"
+        md_content += "```python\n"
+        md_content += f"{snippet['code']}\n"
+        md_content += "```\n\n"
 
-        // HTML要素の生成
-        for (const [category, snippets] of Object.entries(codeData)) {
-            let categoryHtml = `<div class="category"><h2>${category}</h2>`;
-            
-            snippets.forEach((snippet, index) => {
-                const uniqueId = `code-${Math.random().toString(36).substr(2, 9)}`;
-                categoryHtml += `
-                    <div class="snippet">
-                        <div class="snippet-header">
-                            <span class="snippet-title">📌 ${snippet.title}</span>
-                            <button class="copy-btn" onclick="copyToClipboard('${uniqueId}', this)">コピー</button>
-                        </div>
-                        <pre><code id="${uniqueId}">${escapeHtml(snippet.code)}</code></pre>
-                    </div>
-                `;
-            });
-            categoryHtml += `</div>`;
-            contentDiv.innerHTML += categoryHtml;
-        }
-
-        // HTMLエスケープ処理
-        function escapeHtml(unsafe) {
-            return unsafe
-                 .replace(/&/g, "&amp;")
-                 .replace(/</g, "&lt;")
-                 .replace(/>/g, "&gt;")
-                 .replace(/"/g, "&quot;")
-                 .replace(/'/g, "&#039;");
-        }
-
-        // コピー機能
-        function copyToClipboard(elementId, button) {
-            const codeText = document.getElementById(elementId).innerText;
-            navigator.clipboard.writeText(codeText).then(() => {
-                const originalText = button.innerText;
-                button.innerText = "コピーしました！";
-                button.style.backgroundColor = "#2ecc71";
-                setTimeout(() => {
-                    button.innerText = originalText;
-                    button.style.backgroundColor = "#3498db";
-                }, 2000);
-            }).catch(err => {
-                console.error('クリップボードへのコピーに失敗しました', err);
-                alert('コピーに失敗しました');
-            });
-        }
-    </script>
-</body>
-</html>
-"""
-
-# 3. 辞書データをJSON文字列に変換してHTMLに埋め込む
-json_str = json.dumps(code_data, ensure_ascii=False)
-final_html = html_template.replace("{json_data}", json_str)
-
-# 4. HTMLファイルとして保存
-file_name = "my_features_app.html"
+# 3. Markdownファイルとして保存
+file_name = "README.md"
 with open(file_name, "w", encoding="utf-8") as f:
-    f.write(final_html)
+    f.write(md_content)
 
-print(f"✅ '{file_name}' を作成しました！ダウンロードしてブラウザで開いてください。")
+print(f"✅ '{file_name}' を作成しました！これをGitHubリポジトリにアップロードしてください。")
