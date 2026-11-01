@@ -161,26 +161,7 @@ if not selected:
     st.warning("特徴量を1列以上選択してください。")
     st.stop()
 
-# 前回の重要度がある場合、マイナス重要度を一括で選択解除
-previous_importance = st.session_state.get("importance")
-if previous_importance is not None:
-    negative_features = previous_importance.loc[
-        previous_importance["重要度平均"] < 0, "特徴量"
-    ].tolist()
-    if negative_features:
-        st.warning(f"マイナス重要度の特徴量：{len(negative_features)}列")
-        st.caption("一括除外は学習対象から外すだけで、元データやParquetファイルは変更しません。")
-        if st.button("マイナス重要度を一括除外"):
-            st.session_state["selected_features"] = [
-                c for c in st.session_state["selected_features"]
-                if c not in negative_features
-            ]
-            st.session_state.pop("importance", None)
-            st.session_state.pop("scores", None)
-            st.session_state.pop("prediction", None)
-            st.success(f"{len(negative_features)}列を学習対象から外しました。")
-            st.rerun()
-
+# マイナス重要度の一括除外ボタンは、重要度計算後の表示位置に配置します。
 st.subheader("3. LightGBM検証")
 if st.button("検証を実行", type="primary", use_container_width=True):
     selected = st.session_state["selected_features"]
@@ -259,6 +240,27 @@ if st.button("検証を実行", type="primary", use_container_width=True):
     st.caption("Permutation Importance。マイナス値は、その検証区間では列を使わない方がMAEが良かった可能性があります。")
     st.dataframe(importance, use_container_width=True)
     st.bar_chart(importance.set_index("特徴量")["重要度平均"])
+
+    # 計算直後にボタンを表示。押すとマイナス重要度の列を特徴量選択から外します。
+    negative_features = importance.loc[
+        importance["重要度平均"] < 0, "特徴量"
+    ].tolist()
+
+    if negative_features:
+        st.warning(f"マイナス重要度：{len(negative_features)}列")
+        st.caption("このボタンは学習対象から外すだけです。元のParquetデータは変更しません。")
+        if st.button("マイナス重要度の特徴量を一括削除", key="remove_negative_features"):
+            st.session_state["selected_features"] = [
+                col for col in st.session_state.get("selected_features", [])
+                if col not in negative_features
+            ]
+            st.session_state.pop("importance", None)
+            st.session_state.pop("scores", None)
+            st.session_state.pop("prediction", None)
+            st.success(f"{len(negative_features)}列を学習対象から外しました。")
+            st.rerun()
+    else:
+        st.info("今回の検証では、マイナス重要度の特徴量はありませんでした。")
 
     final_model = make_model(X, complexity, seed)
     final_model.fit(X, y)
